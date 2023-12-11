@@ -1,6 +1,11 @@
-Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenates fragmented packets and does not rely on ports for service identification. Screenshots: http://imgur.com/opQo7Bb http://imgur.com/Kl5I6Ju
+Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenates fragmented packets and does not rely on ports for service identification. 
 
-###Sniffs
+| Screenshots |
+|:-----:|
+| ![Screenie1](http://imgur.com/opQo7Bb.png) |
+| ![Screenie2](http://imgur.com/Kl5I6Ju.png) |
+
+### Sniffs
 
 * URLs visited
 * POST loads sent
@@ -14,33 +19,33 @@ Thoroughly sniff passwords and hashes from an interface or pcap file. Concatenat
 * Telnet logins/passwords
 * SMTP logins/passwords
 * SNMP community string
-* NTLMv1/v2 all supported protocols like HTTP, SMB, LDAP, etc
+* NTLMv1/v2 all supported protocols: HTTP, SMB, LDAP, etc.
 * Kerberos
 
-
-###Examples
+### Examples
 
 Auto-detect the interface to sniff
 
-```sudo python net-creds.py```
+`sudo python net-creds.py`
 
 Choose eth0 as the interface
 
-```sudo python net-creds.py -i eth0```
+`sudo python net-creds.py -i eth0`
 
 Ignore packets to and from 192.168.0.2
 
-```sudo python net-creds.py -f 192.168.0.2```
+`sudo python net-creds.py -f 192.168.0.2`
 
 Read from pcap
 
-```python net-creds.py -p pcapfile```
+`python net-creds.py -p pcapfile`
 
 
-####OSX
+#### OS X
 
 Credit to [epocs](https://github.com/epocs):
-```
+
+```bash
 sudo easy_install pip
 sudo pip install scapy
 sudo pip install pcapy
@@ -51,9 +56,10 @@ sudo pip install pypcap
 brew tap brona/iproute2mac
 brew install iproute2mac
 ```
+
 Then replace line 74 '/sbin/ip' with '/usr/local/bin/ip'.
 
 
-####Thanks
+#### Thanks
 * Laurent Gaffie
 * psychomario

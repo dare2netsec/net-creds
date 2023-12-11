@@ -13,13 +13,14 @@ import argparse
 import signal
 import base64
 from urllib import unquote
-from subprocess import Popen, PIPE
+import platform
+from subprocess import Popen, PIPE, check_output
 from collections import OrderedDict
 from BaseHTTPServer import BaseHTTPRequestHandler
 from StringIO import StringIO
 from urllib import unquote
-import binascii
-import pcap
+#import binascii    #already imported on line 10
+# Debug
 #from IPython import embed
 
 ##########################
@@ -70,14 +71,17 @@ def parse_args():
    return parser.parse_args()
 
 def iface_finder():
-    try:
+    system_platform = platform.system()
+    if system_platform == 'Linux':
         ipr = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
         for line in ipr.communicate()[0].splitlines():
             if 'default' in line:
                 l = line.split()
                 iface = l[4]
                 return iface
-    except IOError:
+    elif system_platform == 'Darwin':  # OSX support
+        return check_output("route get 0.0.0.0 2>/dev/null| sed -n '5p' | cut -f4 -d' '", shell=True).rstrip()
+    else:
         exit('[-] Could not find an internet active interface; please specify one with -i <interface>')
 
 def frag_remover(ack, load):
@@ -140,7 +144,7 @@ def pkt_parser(pkt):
         return
 
     # UDP
-    if pkt.haslayer(UDP) and pkt.haslayer(IP) and pkt.haslayer(Raw):
+    if pkt.haslayer(UDP) and pkt.haslayer(IP):
 
         src_ip_port = str(pkt[IP].src) + ':' + str(pkt[UDP].sport)
         dst_ip_port = str(pkt[IP].dst) + ':' + str(pkt[UDP].dport)
@@ -210,15 +214,15 @@ def telnet_logins(src_ip_port, dst_ip_port, load, ack, seq):
         except UnicodeDecodeError:
             pass
 
-        # \r or \r\n terminate commands in telnet if my pcaps are to be believed
-        if '\r' in telnet_stream[src_ip_port] or '\r\n' in telnet_stream[src_ip_port]:
+        # \r or \r\n or \n terminate commands in telnet if my pcaps are to be believed
+        if '\r' in telnet_stream[src_ip_port] or '\n' in telnet_stream[src_ip_port]:
             telnet_split = telnet_stream[src_ip_port].split(' ', 1)
             cred_type = telnet_split[0]
-            value = telnet_split[1].replace('\r\n', '').replace('\r', '')
+            value = telnet_split[1].replace('\r\n', '').replace('\r', '').replace('\n', '')
             # Create msg, the return variable
             msg = 'Telnet %s: %s' % (cred_type, value)
-            del telnet_stream[src_ip_port]
             printer(src_ip_port, dst_ip_port, msg)
+            del telnet_stream[src_ip_port]
 
     # This part relies on the telnet packet ending in
     # "login:", "password:", or "username:" and being <750 chars
@@ -288,6 +292,7 @@ def ParseMSKerbv5UDP(Data):
     Maybe replace this eventually with the kerberos python lib
     Parses Kerberosv5 hashes from packets
     '''
+
     try:
         MsgType = Data[17:18]
         EncType = Data[39:40]
@@ -295,38 +300,41 @@ def ParseMSKerbv5UDP(Data):
         return
 
     if MsgType == "\x0a" and EncType == "\x17":
-        if Data[40:44] == "\xa2\x36\x04\x34" or Data[40:44] == "\xa2\x35\x04\x33":
-            HashLen = struct.unpack('<b',Data[41:42])[0]
-            if HashLen == 54:
-                Hash = Data[44:96]
+        try:
+            if Data[40:44] == "\xa2\x36\x04\x34" or Data[40:44] == "\xa2\x35\x04\x33":
+                HashLen = struct.unpack('<b',Data[41:42])[0]
+                if HashLen == 54:
+                    Hash = Data[44:96]
+                    SwitchHash = Hash[16:]+Hash[0:16]
+                    NameLen = struct.unpack('<b',Data[144:145])[0]
+                    Name = Data[145:145+NameLen]
+                    DomainLen = struct.unpack('<b',Data[145+NameLen+3:145+NameLen+4])[0]
+                    Domain = Data[145+NameLen+4:145+NameLen+4+DomainLen]
+                    BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+                    return 'MS Kerberos: %s' % BuildHash
+
+                if HashLen == 53:
+                    Hash = Data[44:95]
+                    SwitchHash = Hash[16:]+Hash[0:16]
+                    NameLen = struct.unpack('<b',Data[143:144])[0]
+                    Name = Data[144:144+NameLen]
+                    DomainLen = struct.unpack('<b',Data[144+NameLen+3:144+NameLen+4])[0]
+                    Domain = Data[144+NameLen+4:144+NameLen+4+DomainLen]
+                    BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
+                    return 'MS Kerberos: %s' % BuildHash
+
+            else:
+                HashLen = struct.unpack('<b',Data[48:49])[0]
+                Hash = Data[49:49+HashLen]
                 SwitchHash = Hash[16:]+Hash[0:16]
-                NameLen = struct.unpack('<b',Data[144:145])[0]
-                Name = Data[145:145+NameLen]
-                DomainLen = struct.unpack('<b',Data[145+NameLen+3:145+NameLen+4])[0]
-                Domain = Data[145+NameLen+4:145+NameLen+4+DomainLen]
+                NameLen = struct.unpack('<b',Data[HashLen+97:HashLen+97+1])[0]
+                Name = Data[HashLen+98:HashLen+98+NameLen]
+                DomainLen = struct.unpack('<b',Data[HashLen+98+NameLen+3:HashLen+98+NameLen+4])[0]
+                Domain = Data[HashLen+98+NameLen+4:HashLen+98+NameLen+4+DomainLen]
                 BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
                 return 'MS Kerberos: %s' % BuildHash
-
-            if HashLen == 53:
-                Hash = Data[44:95]
-                SwitchHash = Hash[16:]+Hash[0:16]
-                NameLen = struct.unpack('<b',Data[143:144])[0]
-                Name = Data[144:144+NameLen]
-                DomainLen = struct.unpack('<b',Data[144+NameLen+3:144+NameLen+4])[0]
-                Domain = Data[144+NameLen+4:144+NameLen+4+DomainLen]
-                BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-                return 'MS Kerberos: %s' % BuildHash
-
-        else:
-            HashLen = struct.unpack('<b',Data[48:49])[0]
-            Hash = Data[49:49+HashLen]
-            SwitchHash = Hash[16:]+Hash[0:16]
-            NameLen = struct.unpack('<b',Data[HashLen+97:HashLen+97+1])[0]
-            Name = Data[HashLen+98:HashLen+98+NameLen]
-            DomainLen = struct.unpack('<b',Data[HashLen+98+NameLen+3:HashLen+98+NameLen+4])[0]
-            Domain = Data[HashLen+98+NameLen+4:HashLen+98+NameLen+4+DomainLen]
-            BuildHash = "$krb5pa$23$"+Name+"$"+Domain+"$dummy$"+SwitchHash.encode('hex')
-            return 'MS Kerberos: %s' % BuildHash
+        except struct.error:
+            return
 
 def Decode_Ip_Packet(s):
     '''
@@ -639,7 +647,6 @@ def other_parser(src_ip_port, dst_ip_port, full_load, ack, seq, pkt, verbose):
         # Basic Auth
         parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header)
 
-
 def get_http_searches(http_url_req, body, host):
     '''
     Find search terms from URLs. Prone to false positives but rather err on that side than false negatives
@@ -667,7 +674,7 @@ def get_http_searches(http_url_req, body, host):
         # nobody's making >100 character searches
         if len(searched) > 100:
             return
-        msg = 'Searched %s: %s' % (host, unquote(searched).replace('+', ' '))
+        msg = 'Searched %s: %s' % (host, unquote(searched.encode('utf8')).replace('+', ' '))
         return msg
 
 def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
@@ -675,11 +682,18 @@ def parse_basic_auth(src_ip_port, dst_ip_port, headers, authorization_header):
     Parse basic authentication over HTTP
     '''
     if authorization_header:
-        header_val = headers[authorization_header.group()]
+        # authorization_header sometimes is triggered by failed ftp
+        try:
+            header_val = headers[authorization_header.group()]
+        except KeyError:
+            return
         b64_auth_re = re.match('basic (.+)', header_val, re.IGNORECASE)
         if b64_auth_re != None:
             basic_auth_b64 = b64_auth_re.group(1)
-            basic_auth_creds = base64.decodestring(basic_auth_b64)
+            try:
+                basic_auth_creds = base64.decodestring(basic_auth_b64)
+            except Exception:
+                return
             msg = 'Basic Authentication: %s' % basic_auth_creds
             printer(src_ip_port, dst_ip_port, msg)
 
@@ -730,15 +744,13 @@ def headers_to_dict(header_lines):
     Convert the list of header lines into a dictionary
     '''
     headers = {}
-    # Incomprehensible list comprehension flattens list of headers
-    # that are each split at ': '
-    # http://stackoverflow.com/a/406296
-    headers_list = [x for line in header_lines for x in line.split(': ', 1)]
-    headers_dict = dict(zip(headers_list[0::2], headers_list[1::2]))
-    # Make the header key (like "Content-Length") lowercase
-    for header in headers_dict:
-        headers[header.lower()] = headers_dict[header]
-
+    for line in header_lines:
+        lineList=line.split(': ', 1)
+        key=lineList[0].lower()
+        if len(lineList)>1:
+                headers[key]=lineList[1]
+        else:
+                headers[key]=""
     return headers
 
 def parse_http_line(http_line, http_methods):
@@ -804,13 +816,19 @@ def parse_netntlm_chal(headers, chal_header, ack):
     Parse the netntlm server challenge
     https://code.google.com/p/python-ntlm/source/browse/trunk/python26/ntlm/ntlm.py
     '''
-    header_val2 = headers[chal_header]
+    try:
+        header_val2 = headers[chal_header]
+    except KeyError:
+        return
     header_val2 = header_val2.split(' ', 1)
     # The header value can either start with NTLM or Negotiate
-    if header_val2[0] == 'NTLM' or header_val2[0] == 'Negotiate':
-        msg2 = header_val2[1]
+    if header_val2[0] == 'NTLM' or header_val2[0].lower() == 'negotiate':
+        try:
+            msg2 = header_val2[1]
+        except IndexError:
+            return
         msg2 = base64.decodestring(msg2)
-        parse_ntlm_chal(ack, msg2)
+        parse_ntlm_chal(msg2, ack)
 
 def parse_ntlm_chal(msg2, ack):
     '''
@@ -819,8 +837,11 @@ def parse_ntlm_chal(msg2, ack):
     global challenge_acks
 
     Signature = msg2[0:8]
-    msg_type = struct.unpack("<I",msg2[8:12])[0]
-    assert(msg_type==2)
+    try:
+        msg_type = struct.unpack("<I",msg2[8:12])[0]
+        assert(msg_type==2)
+    except Exception:
+        return
     ServerChallenge = msg2[24:32].encode('hex')
 
     # Keep the dict of ack:challenge to less than 50 chals
@@ -832,7 +853,10 @@ def parse_netntlm_resp_msg(headers, resp_header, seq):
     '''
     Parse the client response to the challenge
     '''
-    header_val3 = headers[resp_header]
+    try:
+        header_val3 = headers[resp_header]
+    except KeyError:
+        return
     header_val3 = header_val3.split(' ', 1)
 
     # The header value can either start with NTLM or Negotiate
@@ -893,10 +917,10 @@ def get_login_pass(body):
                   'alias', 'pseudo', 'email', 'username', '_username', 'userid', 'form_loginname', 'loginname',
                   'login_id', 'loginid', 'session_key', 'sessionkey', 'pop_login', 'uid', 'id', 'user_id', 'screename',
                   'uname', 'ulogin', 'acctname', 'account', 'member', 'mailaddress', 'membername', 'login_username',
-                  'login_email', 'loginusername', 'loginemail', 'uin', 'sign-in']
+                  'login_email', 'loginusername', 'loginemail', 'uin', 'sign-in', 'usuario']
     passfields = ['ahd_password', 'pass', 'password', '_password', 'passwd', 'session_password', 'sessionpassword', 
                   'login_password', 'loginpassword', 'form_pw', 'pw', 'userpassword', 'pwd', 'upassword', 'login_password'
-                  'passwort', 'passwrd', 'wppassword', 'upasswd']
+                  'passwort', 'passwrd', 'wppassword', 'upasswd','senha','contrasena']
 
     for login in userfields:
         login_re = re.search('(%s=[^&]+)' % login, body, re.IGNORECASE)
@@ -914,8 +938,25 @@ def printer(src_ip_port, dst_ip_port, msg):
     if dst_ip_port != None:
         print_str = '[%s > %s] %s%s%s' % (src_ip_port, dst_ip_port, T, msg, W)
         # All credentials will have dst_ip_port, URLs will not
-        logging.info(print_str)
+
+        # Prevent identical outputs unless it's an HTTP search or POST load
+        skip = ['Searched ', 'POST load:']
+        for s in skip:
+            if s not in msg:
+                if os.path.isfile('credentials.txt'):
+                    with open('credentials.txt', 'r') as log:
+                        contents = log.read()
+                        if msg in contents:
+                            return
+
         print print_str
+
+        # Escape colors like whatweb has
+        ansi_escape = re.compile(r'\x1b[^m]*m')
+        print_str = ansi_escape.sub('', print_str)
+
+        # Log the creds
+        logging.info(print_str)
     else:
         print_str = '[%s] %s' % (src_ip_port.split(':')[0], msg)
         print print_str
@@ -935,11 +976,11 @@ def main(args):
     # Read packets from either pcap or interface
     if args.pcap:
         try:
-            pcap = rdpcap(args.pcap)
-        except Exception:
+            for pkt in PcapReader(args.pcap):
+                pkt_parser(pkt)
+        except IOError:
             exit('[-] Could not open %s' % args.pcap)
-        for pkt in pcap:
-            pkt_parser(pkt)
+
     else:
         # Check for root
         if geteuid():
